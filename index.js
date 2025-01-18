@@ -31,43 +31,46 @@ const accounts = ["FirstSquawk", "theinsiderpaper", "deitaone", "disclosetv"];
 
 async function scrapeProfileData(page, username) {
   try {
-    await page.waitForSelector('[data-testid="UserName"]', { timeout: 10000 });
-    await page.waitForSelector('[data-testid="UserDescription"]', {
+    // Wait for the main content to load
+    await page.waitForSelector('div[data-testid="primaryColumn"]', {
       timeout: 10000,
     });
 
+    // Use setTimeout with Promise instead of waitForTimeout
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
     const profileData = await page.evaluate(() => {
       const getName = () => {
-        const nameElement = document.querySelector('[data-testid="UserName"]');
+        const nameElement = document.querySelector(
+          'div[data-testid="primaryColumn"] span.css-901oao.css-16my406.r-poiln3.r-bcqeeo.r-qvutc0'
+        );
         return nameElement ? nameElement.textContent.trim() : "";
       };
 
       const getBio = () => {
         const bioElement = document.querySelector(
-          '[data-testid="UserDescription"]'
+          'div[data-testid="primaryColumn"] div[data-testid="UserDescription"]'
         );
         return bioElement ? bioElement.textContent.trim() : "";
       };
 
       const getFollowers = () => {
-        const followersText = Array.from(
-          document.querySelectorAll('a[href*="/followers"] span')
-        ).find((span) => span.textContent.includes("Followers"))?.parentElement
-          ?.textContent;
-        return followersText ? followersText.replace(/[^0-9.KMB]/g, "") : "0";
+        const followersElement = document.querySelector(
+          'div[data-testid="primaryColumn"] a[href$="/followers"] span'
+        );
+        return followersElement ? followersElement.textContent.trim() : "0";
       };
 
       const getFollowing = () => {
-        const followingText = Array.from(
-          document.querySelectorAll('a[href*="/following"] span')
-        ).find((span) => span.textContent.includes("Following"))?.parentElement
-          ?.textContent;
-        return followingText ? followingText.replace(/[^0-9.KMB]/g, "") : "0";
+        const followingElement = document.querySelector(
+          'div[data-testid="primaryColumn"] a[href$="/following"] span'
+        );
+        return followingElement ? followingElement.textContent.trim() : "0";
       };
 
       const getLocation = () => {
         const locationElement = document.querySelector(
-          '[data-testid="UserLocation"]'
+          'div[data-testid="primaryColumn"] span[data-testid="UserLocation"]'
         );
         return locationElement ? locationElement.textContent.trim() : "";
       };
@@ -83,6 +86,7 @@ async function scrapeProfileData(page, username) {
       };
     });
 
+    console.log(`Profile data scraped for ${username}:`, profileData);
     return profileData;
   } catch (error) {
     console.error(`Error scraping profile for ${username}:`, error);
@@ -90,36 +94,19 @@ async function scrapeProfileData(page, username) {
   }
 }
 
-async function saveProfileData(profiles) {
-  const outputDir = path.join(__dirname, "scraped_data");
-  await fs.mkdir(outputDir, { recursive: true });
-
-  const filePath = path.join(outputDir, "profiles.json");
-  await fs.writeFile(filePath, JSON.stringify(profiles, null, 2));
-  return filePath;
-}
-
-async function scrapeTwitterAccount(username, browser) {
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
-
+async function scrapeTweets(page, username) {
   try {
-    const url = `https://twitter.com/${username}`;
-    await page.goto(url, { waitUntil: "networkidle0" });
-
-    // First get profile data
-    const profileData = await scrapeProfileData(page, username);
-
-    // Then get tweets
+    // Wait for tweets to load
     await page.waitForSelector('article[data-testid="tweet"]', {
       timeout: 10000,
     });
 
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayString = yesterday.toISOString().split("T")[0];
+    // Use setTimeout with Promise instead of waitForTimeout
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    const tweets = await page.evaluate((date) => {
+    const yesterday = moment().subtract(1, "days").format("YYYY-MM-DD");
+
+    const tweets = await page.evaluate((yesterday) => {
       const tweetElements = document.querySelectorAll(
         'article[data-testid="tweet"]'
       );
@@ -130,12 +117,15 @@ async function scrapeTwitterAccount(username, browser) {
           '[data-testid="tweetText"]'
         )?.innerText;
         const timestamp = tweet.querySelector("time")?.dateTime;
-        const likes =
-          tweet.querySelector('[data-testid="like"]')?.innerText || "0";
-        const retweets =
-          tweet.querySelector('[data-testid="retweet"]')?.innerText || "0";
+        const likesElement = tweet.querySelector('[data-testid="like"] span');
+        const retweetsElement = tweet.querySelector(
+          '[data-testid="retweet"] span'
+        );
 
-        if (tweetText && timestamp && timestamp.includes(date)) {
+        const likes = likesElement ? likesElement.innerText : "0";
+        const retweets = retweetsElement ? retweetsElement.innerText : "0";
+
+        if (tweetText && timestamp && timestamp.includes(yesterday)) {
           tweets.push({
             text: tweetText,
             timestamp: timestamp,
@@ -146,18 +136,27 @@ async function scrapeTwitterAccount(username, browser) {
       });
 
       return tweets;
-    }, yesterdayString);
+    }, yesterday);
 
-    return { profileData, tweets };
+    console.log(`Tweets scraped for ${username}:`, tweets);
+    return tweets;
   } catch (error) {
-    console.error(`Error scraping ${username}:`, error);
-    return { profileData: null, tweets: [] };
-  } finally {
-    await page.close();
+    console.error(`Error scraping tweets for ${username}:`, error);
+    return [];
   }
 }
 
-async function saveToCsv(data, date) {
+async function saveProfileData(profiles) {
+  const outputDir = path.join(__dirname, "scraped_data");
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const filePath = path.join(outputDir, "profiles.json");
+  await fs.writeFile(filePath, JSON.stringify(profiles, null, 2));
+  console.log("Profile data saved to:", filePath);
+  return filePath;
+}
+
+async function saveToCsv(data, profiles, date) {
   const outputDir = path.join(__dirname, "scraped_data");
   await fs.mkdir(outputDir, { recursive: true });
 
@@ -167,6 +166,8 @@ async function saveToCsv(data, date) {
   // Flatten the data for CSV
   const flattenedData = [];
   for (const [account, tweets] of Object.entries(data)) {
+    const profile = profiles[account] || {};
+
     tweets.forEach((tweet) => {
       flattenedData.push({
         account,
@@ -174,6 +175,12 @@ async function saveToCsv(data, date) {
         text: tweet.text.replace(/\n/g, " "), // Remove newlines for CSV
         likes: tweet.likes,
         retweets: tweet.retweets,
+        accountName: profile.name || "",
+        accountBio: profile.bio || "",
+        accountFollowers: profile.followers || "",
+        accountFollowing: profile.following || "",
+        accountLocation: profile.location || "",
+        profileLastUpdated: profile.lastUpdated || "",
       });
     });
   }
@@ -187,46 +194,49 @@ async function saveToCsv(data, date) {
       { id: "text", title: "TWEET" },
       { id: "likes", title: "LIKES" },
       { id: "retweets", title: "RETWEETS" },
+      { id: "accountName", title: "ACCOUNT_NAME" },
+      { id: "accountBio", title: "ACCOUNT_BIO" },
+      { id: "accountFollowers", title: "ACCOUNT_FOLLOWERS" },
+      { id: "accountFollowing", title: "ACCOUNT_FOLLOWING" },
+      { id: "accountLocation", title: "ACCOUNT_LOCATION" },
+      { id: "profileLastUpdated", title: "PROFILE_LAST_UPDATED" },
     ],
   });
 
   await csvWriter.writeRecords(flattenedData);
+  console.log("Data saved to CSV:", filePath);
   return filePath;
 }
 
-async function sendEmail(tweetFilePath, profileFilePath, date) {
-  const emailText = `
-Twitter scraping results for ${date}
-
-Attached files:
-1. Daily tweets data (CSV)
-2. Updated profile information (JSON)
-
-This is an automated message.
-`;
-
-  const mailOptions = {
-    from: emailConfig.from,
-    to: emailConfig.to,
-    subject: `Twitter Scraping Report - ${date}`,
-    text: emailText,
-    attachments: [
-      {
-        filename: path.basename(tweetFilePath),
-        path: tweetFilePath,
-      },
-      {
-        filename: path.basename(profileFilePath),
-        path: profileFilePath,
-      },
-    ],
-  };
+async function scrapeTwitterAccount(username, browser) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
 
   try {
-    await transporter.sendMail(mailOptions);
-    console.log("Email sent successfully with both tweets and profile data");
+    const url = `https://twitter.com/${username}`;
+    console.log(`Navigating to ${url}`);
+
+    // Add navigation options for better reliability
+    await page.goto(url, {
+      waitUntil: "networkidle0",
+      timeout: 30000,
+    });
+
+    // Wait for a bit after navigation
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Get profile data
+    const profileData = await scrapeProfileData(page, username);
+
+    // Get tweets
+    const tweets = await scrapeTweets(page, username);
+
+    return { profileData, tweets };
   } catch (error) {
-    console.error("Error sending email:", error);
+    console.error(`Error scraping ${username}:`, error);
+    return { profileData: null, tweets: [] };
+  } finally {
+    await page.close();
   }
 }
 
@@ -253,20 +263,60 @@ async function scrapeAllAccounts() {
       }
       results[account] = tweets;
 
-      await new Promise((resolve) => setTimeout(resolve, 5000)); // Rate limiting
+      // Add delay between accounts
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
-    // Save both profile and tweet data
     const date = moment().subtract(1, "days").format("YYYY-MM-DD");
+
+    // Save both profile and tweet data
     const profileFilePath = await saveProfileData(profiles);
-    const tweetFilePath = await saveToCsv(results, date);
+    const tweetFilePath = await saveToCsv(results, profiles, date);
 
     // Send email with both files
     await sendEmail(tweetFilePath, profileFilePath, date);
 
     console.log("Scraping completed successfully");
+  } catch (error) {
+    console.error("Error in scraping process:", error);
   } finally {
     await browser.close();
+  }
+}
+
+async function sendEmail(tweetFilePath, profileFilePath, date) {
+  const emailText = `
+Twitter scraping results for ${date}
+
+Attached files:
+1. Daily tweets data with profile information (CSV)
+2. Profile information (JSON)
+
+This is an automated message.
+`;
+
+  const mailOptions = {
+    from: emailConfig.from,
+    to: emailConfig.to,
+    subject: `Twitter Scraping Report - ${date}`,
+    text: emailText,
+    attachments: [
+      {
+        filename: path.basename(tweetFilePath),
+        path: tweetFilePath,
+      },
+      {
+        filename: path.basename(profileFilePath),
+        path: profileFilePath,
+      },
+    ],
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log("Email sent successfully");
+  } catch (error) {
+    console.error("Error sending email:", error);
   }
 }
 
